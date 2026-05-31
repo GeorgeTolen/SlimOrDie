@@ -1,0 +1,25 @@
+version: '3.9'
+
+services:
+  game:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pohuday_ili_umri
+    ports:
+      - "9000:8080"
+    volumes:
+      - game_data:/app/data
+    environment:
+      - PORT=8080
+      - DB_PATH=/app/data/game.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  game_data:
+    driver: local
