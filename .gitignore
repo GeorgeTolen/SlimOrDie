@@ -1,8 +1,7 @@
-# Compiled binaries
-*.exe
+# Compiled binaries — / anchors to repo root only
+/server
+/server.exe
 *.exe~
-server
-server.exe
 
 # Database
 data/
@@ -10,7 +9,7 @@ data/
 *.db-shm
 *.db-wal
 
-# Go build cache
+# Go
 /vendor/
 
 # Environment
