@@ -101,7 +101,8 @@ class MultiplayerClient {
 
     sendChat(text) { if (text && text.trim()) this.send('chat', { text: text.trim() }); }
 
-    sendReady() { this.send('ready', {}); }
+    sendReady()      { this.send('ready',       {}); }
+    sendNightReady() { this.send('night_ready', {}); }
 }
 
 // ── RemotePlayer ──────────────────────────────────────────────────────────────

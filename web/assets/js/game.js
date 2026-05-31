@@ -249,6 +249,18 @@ class GameEngine {
             }
         });
 
+        // Lobby ГОТОВ: all players ready → start game day 1
+        // Night ГОТОВ:  all players ready → advance to next day (day_start carries the day number)
+        this.mp.on('ready_status', p => {
+            if (!p.all_ready) return;
+            if (this.state === 'lobby') {
+                if (this.lobby) { this.lobby.destroy(); this.lobby = null; }
+                this.gameData.day = 1;
+                this._beginDay();
+            }
+            // night transition is handled by day_start below
+        });
+
         this.mp.on('day_start', p => {
             if (this.mpMode && this.state === 'night') {
                 this.gameData.day = p.day;
@@ -507,7 +519,7 @@ class GameEngine {
         if (this.state === 'evening')  { this._doNight();             return; }
         if (this.state === 'night') {
             if (this.mpMode && this.mp.connected) {
-                this.mp.sendReady();
+                this.mp.sendNightReady();
                 this._showNotification('Ждём других игроков...', '#4af');
             } else {
                 this._advanceDay();
@@ -538,7 +550,7 @@ class GameEngine {
         }
 
         if (id === 'parkour') {
-            if (gd.energy < 15) { this._showNotification('Мало энергии! Поешь сначала.', '#f44'); return; }
+            if (gd.energy < 5) { this._showNotification('Совсем нет энергии! Поешь сначала.', '#f44'); return; }
             const levelData = LEVELS[(gd.day - 1) % LEVELS.length];
             if (this.activeGame) { this.activeGame.destroy(); this.activeGame = null; }
             this.activeGame = new ParkourGame(this.ctx, this.W, this.H, levelData, gd, this.audio, this.particles, this.mpMode ? this.mp : null);
@@ -549,7 +561,7 @@ class GameEngine {
         }
 
         if (id === 'gym') {
-            if (gd.energy < 10) { this._showNotification('Мало энергии!', '#f44'); return; }
+            if (gd.energy < 3) { this._showNotification('Совсем нет энергии!', '#f44'); return; }
             const ex = GYM_EXERCISES[gd.gymTypesCompleted.size % GYM_EXERCISES.length];
             if (this.activeGame) { this.activeGame.destroy(); this.activeGame = null; }
             this.activeGame = new GymGame(this.ctx, this.W, this.H, ex, gd, this.audio, this.particles);
@@ -652,9 +664,11 @@ class GameEngine {
         const gd     = this.gameData;
         const events = [];
 
-        if (gd.energy > 70)       { gd.energy = Math.min(100, gd.energy + 20); events.push('😴 Отлично поспал! +энергия'); }
-        else if (gd.energy < 30)  { gd.weight = Math.min(200, gd.weight + 2);  events.push('😩 Мало спал! +2 кг'); }
-        else                      { gd.energy = Math.min(100, gd.energy + 10); events.push('😐 Нормальный сон'); }
+        // Always restore a base 40 energy per night so player can always do something
+        gd.energy = Math.min(100, gd.energy + 40);
+        if (gd.energy >= 90)      { events.push('😴 Отлично поспал! Полная энергия'); }
+        else if (gd.energy < 40)  { gd.weight = Math.min(200, gd.weight + 2); events.push('😩 Плохой сон! +2 кг, мало энергии'); }
+        else                      { events.push(`😐 Нормальный сон. Энергия: ${Math.round(gd.energy)}%`); }
 
         gd.mood = Math.min(100, gd.mood + 15);
         events.push(`😊 Настроение: ${Math.round(gd.mood)}%`);

@@ -264,7 +264,7 @@ class UIManager {
         ctx.textAlign = 'left';
     }
 
-    renderMorning(gameData, lastNightEvents) {
+    renderMorning(gameData, lastNightEvents, hovered = null) {
         const ctx = this.ctx;
         const W = this.W; const H = this.H;
 

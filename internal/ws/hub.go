@@ -288,17 +288,40 @@ func (h *Hub) onMessage(c *Client, data []byte) {
 		}, "")
 
 	case "ready":
+		// Lobby ГОТОВ — all clients start day 1 locally when all_ready fires.
+		// Hub does NOT increment day here; each client manages their own day cycle.
 		h.room.mu.Lock()
 		h.room.Ready[c.ID] = true
 		rc := h.readyCountLocked()
 		total := len(h.room.Players)
 		allReady := rc >= total && total > 0
+		if allReady {
+			h.room.Ready = make(map[string]bool) // reset for next use
+		}
+		h.room.mu.Unlock()
+		h.broadcast(MsgReadyStatus, ReadyStatusPayload{
+			ReadyCount: rc, Total: total, AllReady: allReady,
+		}, "")
+
+	case "night_ready":
+		// End-of-night ГОТОВ — all clients advance to next day when all_ready fires.
+		h.room.mu.Lock()
+		h.room.Ready[c.ID] = true
+		rc := h.readyCountLocked()
+		total := len(h.room.Players)
+		allReady := rc >= total && total > 0
+		if allReady {
+			h.room.Ready = make(map[string]bool)
+			h.room.Day++
+			h.room.ActivityDone = make(map[string]map[string]bool)
+		}
+		day := h.room.Day
 		h.room.mu.Unlock()
 		h.broadcast(MsgReadyStatus, ReadyStatusPayload{
 			ReadyCount: rc, Total: total, AllReady: allReady,
 		}, "")
 		if allReady {
-			h.advanceDay()
+			h.broadcast(MsgDayStart, map[string]int{"day": day}, "")
 		}
 	}
 }
