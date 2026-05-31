@@ -1,9 +1,5 @@
 'use strict';
 
-/**
- * MultiplayerClient wraps the WebSocket connection.
- * All received messages are dispatched through this.on(type, handler).
- */
 class MultiplayerClient {
     constructor() {
         this.ws = null;
@@ -11,10 +7,8 @@ class MultiplayerClient {
         this.playerId = null;
         this.playerColor = '#fff';
         this.handlers = {};
-        this.reconnectTimer = null;
-        this.pingInterval = null;
         this._moveThrottle = 0;
-        this.MOVE_INTERVAL = 1 / 20; // 20 updates/s
+        this.MOVE_INTERVAL = 1 / 20;
     }
 
     get wsUrl() {
@@ -33,34 +27,24 @@ class MultiplayerClient {
         };
 
         this.ws.onmessage = e => {
-            // Server may batch messages separated by newlines
-            const lines = e.data.split('\n');
-            lines.forEach(line => {
+            e.data.split('\n').forEach(line => {
                 if (!line.trim()) return;
-                try {
-                    const msgs = JSON.parse(line);
-                    this._dispatch(msgs);
-                } catch (_) {}
+                try { this._dispatch(JSON.parse(line)); } catch (_) {}
             });
         };
 
         this.ws.onclose = () => {
             this.connected = false;
-            console.log('[MP] disconnected');
             this._dispatch({ type: 'disconnected', payload: {} });
         };
 
-        this.ws.onerror = err => {
-            console.warn('[MP] error', err);
-        };
+        this.ws.onerror = err => console.warn('[MP] error', err);
     }
 
     disconnect() {
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
+        if (this.ws) { this.ws.close(); this.ws = null; }
         this.connected = false;
+        this.playerId = null;
     }
 
     on(type, fn) {
@@ -69,15 +53,11 @@ class MultiplayerClient {
         return this;
     }
 
-    off(type) {
-        delete this.handlers[type];
-    }
+    off(type) { delete this.handlers[type]; }
 
     _dispatch(msg) {
-        const handlers = this.handlers[msg.type] || [];
-        handlers.forEach(h => h(msg.payload));
-        const allHandlers = this.handlers['*'] || [];
-        allHandlers.forEach(h => h(msg));
+        (this.handlers[msg.type] || []).forEach(h => h(msg.payload));
+        (this.handlers['*'] || []).forEach(h => h(msg));
     }
 
     send(type, payload = {}) {
@@ -85,11 +65,9 @@ class MultiplayerClient {
         this.ws.send(JSON.stringify({ type, payload }));
     }
 
-    // --- Convenience methods ---
+    // ── Convenience ────────────────────────────────────────────────────────────
 
-    join(name) {
-        this.send('join', { name });
-    }
+    join(name) { this.send('join', { name }); }
 
     sendMove(x, y, state, facing, weight) {
         this.send('move', { x, y, state, facing, weight });
@@ -103,36 +81,41 @@ class MultiplayerClient {
         }
     }
 
-    sendVote(choice) {
-        this.send('vote', { choice });
+    sendActivityStart(activity) {
+        this.send('activity_start', { activity });
     }
 
     sendActivityResult(activity, success, weightLost, newWeight) {
-        this.send('activity_result', { activity, success, weight_lost: weightLost, new_weight: newWeight });
+        this.send('activity_result', {
+            activity, success,
+            weight_lost: weightLost,
+            new_weight: newWeight,
+        });
     }
+
+    sendVote(choice) { this.send('vote', { choice }); }
 
     sendStatsUpdate(weight, energy, mood, score, day) {
         this.send('stats_update', { weight, energy, mood, score, day });
     }
 
-    sendChat(text) {
-        if (text && text.trim()) this.send('chat', { text: text.trim() });
-    }
+    sendChat(text) { if (text && text.trim()) this.send('chat', { text: text.trim() }); }
 
-    sendReady() {
-        this.send('ready', {});
-    }
+    sendReady() { this.send('ready', {}); }
 }
 
-// Remote player — rendered as ghost in parkour and lobby
+// ── RemotePlayer ──────────────────────────────────────────────────────────────
+
 class RemotePlayer {
     constructor(info) {
         this.id = info.id;
-        this.name = info.name;
+        this.name = info.name || 'Игрок';
         this.weight = info.weight || 110;
         this.color = info.color || '#fff';
         this.x = info.x || 0;
         this.y = info.y || 0;
+        this._tx = this.x;
+        this._ty = this.y;
         this.state = info.state || 'idle';
         this.facing = info.facing !== undefined ? info.facing : true;
         this.energy = info.energy || 100;
@@ -140,12 +123,8 @@ class RemotePlayer {
         this.score = info.score || 0;
         this.day = info.day || 1;
         this.ready = info.ready || false;
-        // Smooth interpolation targets
-        this._tx = this.x;
-        this._ty = this.y;
         this.animFrame = 0;
         this.animTimer = 0;
-        // Speech bubble
         this.bubble = null;
         this.bubbleTimer = 0;
     }
@@ -165,40 +144,18 @@ class RemotePlayer {
         if (info.color) this.color = info.color;
     }
 
-    showBubble(text) {
-        this.bubble = text;
-        this.bubbleTimer = 3.0;
-    }
+    showBubble(text) { this.bubble = text; this.bubbleTimer = 3.0; }
 
     tick(dt) {
-        // Lerp towards target position
         this.x += (this._tx - this.x) * Math.min(1, dt * 12);
         this.y += (this._ty - this.y) * Math.min(1, dt * 12);
-
         this.animTimer += dt;
-        if (this.animTimer > 0.15) {
-            this.animTimer = 0;
-            this.animFrame = (this.animFrame + 1) % 4;
-        }
-
-        if (this.bubbleTimer > 0) {
-            this.bubbleTimer -= dt;
-            if (this.bubbleTimer <= 0) this.bubble = null;
-        }
+        if (this.animTimer > 0.15) { this.animTimer = 0; this.animFrame = (this.animFrame + 1) % 4; }
+        if (this.bubbleTimer > 0) { this.bubbleTimer -= dt; if (this.bubbleTimer <= 0) this.bubble = null; }
     }
 
-    get bodyWidth() {
-        if (this.weight >= 100) return 32;
-        if (this.weight >= 85) return 28;
-        if (this.weight >= 70) return 24;
-        return 20;
-    }
-    get bodyHeight() {
-        if (this.weight >= 100) return 38;
-        if (this.weight >= 85) return 34;
-        if (this.weight >= 70) return 30;
-        return 28;
-    }
+    get bodyWidth() { return this.weight >= 100 ? 32 : this.weight >= 85 ? 28 : this.weight >= 70 ? 24 : 20; }
+    get bodyHeight() { return this.weight >= 100 ? 38 : this.weight >= 85 ? 34 : this.weight >= 70 ? 30 : 28; }
 
     renderGhost(ctx, camX = 0, camY = 0) {
         const px = Math.round(this.x - camX);
@@ -208,23 +165,16 @@ class RemotePlayer {
 
         ctx.save();
         ctx.globalAlpha = 0.55;
-
         if (!this.facing) {
-            ctx.translate(px + bw / 2, py);
-            ctx.scale(-1, 1);
-            ctx.translate(-bw / 2, 0);
+            ctx.translate(px + bw / 2, py); ctx.scale(-1, 1); ctx.translate(-bw / 2, 0);
         } else {
             ctx.translate(px, py);
         }
-
-        // Draw tinted ghost version
         this._drawTinted(ctx, bw, bh);
-
         ctx.restore();
 
-        // Name tag above ghost
         ctx.save();
-        ctx.globalAlpha = 0.8;
+        ctx.globalAlpha = 0.9;
         ctx.fillStyle = this.color;
         ctx.font = 'bold 11px monospace';
         ctx.textAlign = 'center';
@@ -232,68 +182,18 @@ class RemotePlayer {
         ctx.textAlign = 'left';
         ctx.restore();
 
-        // Speech bubble
-        if (this.bubble) {
-            this._renderBubble(ctx, px + bw / 2, py - 14);
-        }
+        if (this.bubble) this._renderBubble(ctx, px + bw / 2, py - 14);
     }
 
-    _drawTinted(ctx, bw, bh) {
-        const color = this.color;
-        const legOff = this.state === 'run' ? Math.sin(this.animFrame * 1.5) * 3 : 0;
-
-        ctx.fillStyle = color;
-        // Legs
-        ctx.fillRect(2, bh - 14, bw / 2 - 3, 14);
-        ctx.fillRect(bw / 2 + 1, bh - 14, bw / 2 - 3, 14);
-        if (this.state === 'run') {
-            ctx.globalAlpha = 0.3;
-            ctx.fillRect(2, bh - 14 + legOff, bw / 2 - 3, 6);
-            ctx.fillRect(bw / 2 + 1, bh - 14 - legOff, bw / 2 - 3, 6);
-            ctx.globalAlpha = 0.55;
-        }
-        // Body
-        ctx.fillRect(1, Math.floor(bh * 0.35), bw - 2, Math.ceil(bh * 0.45));
-        // Head
-        ctx.fillRect(Math.floor(bw * 0.1), Math.floor(bh * 0.06), Math.ceil(bw * 0.8), Math.ceil(bh * 0.28));
-        // Eyes as dark dots
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(Math.floor(bw * 0.25), Math.floor(bh * 0.14), 3, 3);
-        ctx.fillRect(Math.floor(bw * 0.6), Math.floor(bh * 0.14), 3, 3);
-    }
-
-    _renderBubble(ctx, cx, ty) {
-        const text = this.bubble.substring(0, 20);
-        ctx.save();
-        ctx.globalAlpha = Math.min(1, this.bubbleTimer);
-        const bw = text.length * 7 + 10;
-        const bh = 20;
-        const bx = cx - bw / 2;
-        const by = ty - bh - 8;
-        ctx.fillStyle = 'rgba(0,0,0,0.75)';
-        ctx.fillRect(bx, by, bw, bh);
-        ctx.strokeStyle = this.color;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(bx, by, bw, bh);
-        ctx.fillStyle = '#fff';
-        ctx.font = '10px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(text, cx, by + 13);
-        ctx.textAlign = 'left';
-        ctx.restore();
-    }
-
-    renderInLobby(ctx, lobbyY) {
+    renderInLobby(ctx, floorY) {
         const bw = this.bodyWidth;
         const bh = this.bodyHeight;
         const px = Math.round(this.x);
-        const py = Math.round(lobbyY - bh);
+        const py = Math.round(floorY - bh);
 
         ctx.save();
         if (!this.facing) {
-            ctx.translate(px + bw / 2, py);
-            ctx.scale(-1, 1);
-            ctx.translate(-bw / 2, 0);
+            ctx.translate(px + bw / 2, py); ctx.scale(-1, 1); ctx.translate(-bw / 2, 0);
         } else {
             ctx.translate(px, py);
         }
@@ -301,7 +201,6 @@ class RemotePlayer {
         this._drawTinted(ctx, bw, bh);
         ctx.restore();
 
-        // Name + weight tag
         ctx.fillStyle = this.color;
         ctx.font = 'bold 12px monospace';
         ctx.textAlign = 'center';
@@ -309,16 +208,45 @@ class RemotePlayer {
         ctx.fillStyle = '#fff';
         ctx.font = '11px monospace';
         ctx.fillText(`${this.weight.toFixed(1)} кг`, px + bw / 2, py - 6);
-
         if (this.ready) {
             ctx.fillStyle = '#4f4';
             ctx.font = '12px monospace';
             ctx.fillText('✓ ГОТОВ', px + bw / 2, py - 30);
         }
-
-        if (this.bubble) {
-            this._renderBubble(ctx, px + bw / 2, py - 34);
-        }
+        if (this.bubble) this._renderBubble(ctx, px + bw / 2, py - 34);
         ctx.textAlign = 'left';
+    }
+
+    _drawTinted(ctx, bw, bh) {
+        const color = this.color;
+        const legOff = this.state === 'run' ? Math.sin(this.animFrame * 1.5) * 3 : 0;
+        ctx.fillStyle = color;
+        ctx.fillRect(2, bh - 14, bw / 2 - 3, 14 + legOff);
+        ctx.fillRect(bw / 2 + 1, bh - 14, bw / 2 - 3, 14 - legOff);
+        ctx.fillRect(1, Math.floor(bh * 0.35), bw - 2, Math.ceil(bh * 0.45));
+        ctx.fillRect(Math.floor(bw * 0.1), Math.floor(bh * 0.06), Math.ceil(bw * 0.8), Math.ceil(bh * 0.28));
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(Math.floor(bw * 0.25), Math.floor(bh * 0.14), 3, 3);
+        ctx.fillRect(Math.floor(bw * 0.60), Math.floor(bh * 0.14), 3, 3);
+    }
+
+    _renderBubble(ctx, cx, ty) {
+        const text = this.bubble.substring(0, 20);
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, this.bubbleTimer);
+        const bw = text.length * 7 + 10;
+        const bx = cx - bw / 2;
+        const by = ty - 28;
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        ctx.fillRect(bx, by, bw, 20);
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bx, by, bw, 20);
+        ctx.fillStyle = '#fff';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(text, cx, by + 13);
+        ctx.textAlign = 'left';
+        ctx.restore();
     }
 }

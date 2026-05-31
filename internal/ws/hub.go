@@ -11,7 +11,6 @@ var playerColors = []string{
 	"#ff44ff", "#ff8800", "#00ffff", "#ff8888",
 }
 
-// Hub maintains all WebSocket clients and the shared room state.
 type Hub struct {
 	mu         sync.RWMutex
 	clients    map[string]*Client
@@ -26,18 +25,19 @@ type clientMsg struct {
 	data   []byte
 }
 
-// Room is the single shared game room.
 type Room struct {
-	mu      sync.Mutex
-	Day     int
-	Phase   string // "lobby" | "playing" | "night"
-	Votes   map[string]string
-	Ready   map[string]bool
-	Players map[string]*PlayerState
+	mu       sync.Mutex
+	Day      int
+	Phase    string // "lobby" | "playing" | "night"
+	Votes    map[string]string
+	Ready    map[string]bool
+	Players  map[string]*PlayerState
 	colorIdx int
+
+	// Cooperative activity tracking: activity -> set of playerIDs that finished
+	ActivityDone map[string]map[string]bool
 }
 
-// PlayerState is the server-side representation of a connected player.
 type PlayerState struct {
 	ID     string
 	Name   string
@@ -56,25 +56,10 @@ type PlayerState struct {
 
 func (ps *PlayerState) toInfo() PlayerInfo {
 	return PlayerInfo{
-		ID:     ps.ID,
-		Name:   ps.Name,
-		Weight: ps.Weight,
-		Energy: ps.Energy,
-		Mood:   ps.Mood,
-		Score:  ps.Score,
-		Day:    ps.Day,
-		Color:  ps.Color,
-		X:      ps.X,
-		Y:      ps.Y,
-		State:  ps.State,
-		Facing: ps.Facing,
-		Ready:  ps.Ready,
+		ID: ps.ID, Name: ps.Name, Weight: ps.Weight, Energy: ps.Energy,
+		Mood: ps.Mood, Score: ps.Score, Day: ps.Day, Color: ps.Color,
+		X: ps.X, Y: ps.Y, State: ps.State, Facing: ps.Facing, Ready: ps.Ready,
 	}
-}
-
-// Register enqueues a new client for the hub's Run loop.
-func (h *Hub) Register(c *Client) {
-	h.register <- c
 }
 
 func NewHub() *Hub {
@@ -84,14 +69,17 @@ func NewHub() *Hub {
 		unregister: make(chan *Client, 32),
 		incoming:   make(chan clientMsg, 256),
 		room: &Room{
-			Day:     1,
-			Phase:   "lobby",
-			Votes:   make(map[string]string),
-			Ready:   make(map[string]bool),
-			Players: make(map[string]*PlayerState),
+			Day:          1,
+			Phase:        "lobby",
+			Votes:        make(map[string]string),
+			Ready:        make(map[string]bool),
+			Players:      make(map[string]*PlayerState),
+			ActivityDone: make(map[string]map[string]bool),
 		},
 	}
 }
+
+func (h *Hub) Register(c *Client) { h.register <- c }
 
 func (h *Hub) Run() {
 	for {
@@ -115,36 +103,22 @@ func (h *Hub) onJoin(c *Client) {
 	color := playerColors[h.room.colorIdx%len(playerColors)]
 	h.room.colorIdx++
 	ps := &PlayerState{
-		ID:     c.ID,
-		Name:   c.Name,
-		Weight: 110,
-		Energy: 100,
-		Mood:   100,
-		Color:  color,
-		Day:    h.room.Day,
-		X:      300 + float64(len(h.room.Players))*80,
-		Y:      380,
-		State:  "idle",
-		Facing: true,
+		ID: c.ID, Name: c.Name, Weight: 110, Energy: 100, Mood: 100,
+		Color: color, Day: h.room.Day,
+		X: 200 + float64(len(h.room.Players))*90, Y: 380,
+		State: "idle", Facing: true,
 	}
 	h.room.Players[c.ID] = ps
 	h.room.mu.Unlock()
 
-	// Send welcome to new client
 	h.sendTo(c, MsgWelcome, WelcomePayload{
-		PlayerID:   c.ID,
-		Players:    h.allPlayers(),
-		GameDay:    h.room.Day,
-		Phase:      h.room.Phase,
-		ReadyCount: h.readyCount(),
-		Total:      h.totalCount(),
+		PlayerID: c.ID, Players: h.allPlayers(),
+		GameDay: h.room.Day, Phase: h.room.Phase,
+		ReadyCount: h.readyCount(), Total: h.totalCount(),
 	})
-
-	// Notify others
 	h.broadcast(MsgPlayerJoin, ps.toInfo(), c.ID)
 	h.broadcastLobby()
-
-	log.Printf("ws: player joined %s (%s)", c.ID, c.Name)
+	log.Printf("ws: joined %s (%s)", c.ID, c.Name)
 }
 
 func (h *Hub) onLeave(c *Client) {
@@ -156,11 +130,18 @@ func (h *Hub) onLeave(c *Client) {
 	delete(h.room.Players, c.ID)
 	delete(h.room.Votes, c.ID)
 	delete(h.room.Ready, c.ID)
+	// Remove from all activity completion sets
+	for act := range h.room.ActivityDone {
+		delete(h.room.ActivityDone[act], c.ID)
+	}
 	h.room.mu.Unlock()
 
 	h.broadcast(MsgPlayerLeave, map[string]string{"player_id": c.ID}, "")
+
+	// Re-check all in-progress activities — maybe everyone is done now
+	h.checkAllActivities()
 	h.broadcastLobby()
-	log.Printf("ws: player left %s", c.ID)
+	log.Printf("ws: left %s", c.ID)
 }
 
 func (h *Hub) onMessage(c *Client, data []byte) {
@@ -170,6 +151,7 @@ func (h *Hub) onMessage(c *Client, data []byte) {
 	}
 
 	switch msg.Type {
+
 	case "join":
 		name, _ := msg.Payload["name"].(string)
 		if name == "" {
@@ -193,32 +175,32 @@ func (h *Hub) onMessage(c *Client, data []byte) {
 		state, _ := p["state"].(string)
 		facing, _ := p["facing"].(bool)
 		weight, _ := p["weight"].(float64)
-
 		h.room.mu.Lock()
 		if ps, ok := h.room.Players[c.ID]; ok {
-			ps.X = x
-			ps.Y = y
-			ps.State = state
-			ps.Facing = facing
+			ps.X = x; ps.Y = y; ps.State = state; ps.Facing = facing
 			if weight > 0 {
 				ps.Weight = weight
 			}
 		}
 		h.room.mu.Unlock()
-
 		h.broadcastExcept(MsgPlayerMove, MovePayload{
 			PlayerID: c.ID, X: x, Y: y, State: state, Facing: facing, Weight: weight,
 		}, c.ID)
 
-	case "vote":
-		choice, _ := msg.Payload["choice"].(string)
+	case "activity_start":
+		activity, _ := msg.Payload["activity"].(string)
 		h.room.mu.Lock()
-		h.room.Votes[c.ID] = choice
-		tally := h.tallyVotes()
-		votes := copyVotes(h.room.Votes)
+		ps := h.room.Players[c.ID]
+		var name, color string
+		if ps != nil {
+			name = ps.Name
+			color = ps.Color
+		}
 		h.room.mu.Unlock()
-
-		h.broadcast(MsgVoteUpdate, VoteUpdatePayload{Votes: votes, Tally: tally}, "")
+		// Broadcast who started so others see the notification
+		h.broadcast(MsgActivityStart, ActivityStartPayload{
+			PlayerID: c.ID, PlayerName: name, Activity: activity, Color: color,
+		}, "")
 
 	case "activity_result":
 		p := msg.Payload
@@ -235,14 +217,24 @@ func (h *Hub) onMessage(c *Client, data []byte) {
 			name = ps.Name
 			color = ps.Color
 		}
+		// Mark this player as done for this activity
+		if h.room.ActivityDone[activity] == nil {
+			h.room.ActivityDone[activity] = make(map[string]bool)
+		}
+		h.room.ActivityDone[activity][c.ID] = true
 		h.room.mu.Unlock()
 
+		// Broadcast individual result
 		h.broadcast(MsgActivityResult, ActivityResultPayload{
 			PlayerID: c.ID, PlayerName: name, Activity: activity,
 			Success: success, WeightLost: wl, NewWeight: newW, Color: color,
 		}, "")
 
-		h.checkGroupBonus(activity)
+		// Broadcast waiting status for this activity
+		h.broadcastWaitingStatus(activity)
+
+		// Check if everyone is done
+		h.checkActivity(activity)
 
 	case "stats_update":
 		p := msg.Payload
@@ -251,7 +243,6 @@ func (h *Hub) onMessage(c *Client, data []byte) {
 		mood, _ := p["mood"].(float64)
 		score, _ := p["score"].(float64)
 		day, _ := p["day"].(float64)
-
 		h.room.mu.Lock()
 		if ps, ok := h.room.Players[c.ID]; ok {
 			if weight > 0 {
@@ -265,11 +256,19 @@ func (h *Hub) onMessage(c *Client, data []byte) {
 			}
 		}
 		h.room.mu.Unlock()
-
 		h.broadcastExcept(MsgStatsUpdate, StatsPayload{
 			PlayerID: c.ID, Weight: weight, Energy: energy,
 			Mood: mood, Score: int(score), Day: int(day),
 		}, c.ID)
+
+	case "vote":
+		choice, _ := msg.Payload["choice"].(string)
+		h.room.mu.Lock()
+		h.room.Votes[c.ID] = choice
+		tally := h.tallyVotes()
+		votes := copyMap(h.room.Votes)
+		h.room.mu.Unlock()
+		h.broadcast(MsgVoteUpdate, VoteUpdatePayload{Votes: votes, Tally: tally}, "")
 
 	case "chat":
 		text, _ := msg.Payload["text"].(string)
@@ -284,7 +283,6 @@ func (h *Hub) onMessage(c *Client, data []byte) {
 			color = ps.Color
 		}
 		h.room.mu.Unlock()
-
 		h.broadcast(MsgChat, ChatPayload{
 			PlayerID: c.ID, PlayerName: name, Text: text, Color: color,
 		}, "")
@@ -296,27 +294,75 @@ func (h *Hub) onMessage(c *Client, data []byte) {
 		total := len(h.room.Players)
 		allReady := rc >= total && total > 0
 		h.room.mu.Unlock()
-
 		h.broadcast(MsgReadyStatus, ReadyStatusPayload{
 			ReadyCount: rc, Total: total, AllReady: allReady,
 		}, "")
-
-		if allReady {
-			h.advanceDay()
-		}
-
-	case "night_done":
-		// Same as ready
-		h.room.mu.Lock()
-		h.room.Ready[c.ID] = true
-		rc := h.readyCountLocked()
-		total := len(h.room.Players)
-		allReady := rc >= total && total > 0
-		h.room.mu.Unlock()
 		if allReady {
 			h.advanceDay()
 		}
 	}
+}
+
+// checkActivity checks if all connected players finished a specific activity.
+func (h *Hub) checkActivity(activity string) {
+	h.room.mu.Lock()
+	done := h.room.ActivityDone[activity]
+	total := len(h.room.Players)
+	doneCount := len(done)
+	allDone := total > 0 && doneCount >= total
+	if allDone {
+		// Reset for next time
+		h.room.ActivityDone[activity] = make(map[string]bool)
+	}
+	h.room.mu.Unlock()
+
+	if allDone {
+		bonus := 0.5
+		h.broadcast(MsgActivityAllDone, ActivityAllDonePayload{
+			Activity: activity, GroupBonus: bonus,
+		}, "")
+		log.Printf("ws: all players done with %s, bonus %.1f", activity, bonus)
+	}
+}
+
+// checkAllActivities is called when a player disconnects.
+func (h *Hub) checkAllActivities() {
+	h.room.mu.Lock()
+	activities := make([]string, 0, len(h.room.ActivityDone))
+	for act, done := range h.room.ActivityDone {
+		if len(done) > 0 {
+			activities = append(activities, act)
+		}
+	}
+	h.room.mu.Unlock()
+
+	for _, act := range activities {
+		h.broadcastWaitingStatus(act)
+		h.checkActivity(act)
+	}
+}
+
+func (h *Hub) broadcastWaitingStatus(activity string) {
+	h.room.mu.Lock()
+	done := make(map[string]bool)
+	names := make(map[string]string)
+	colors := make(map[string]string)
+	for id, ps := range h.room.Players {
+		names[id] = ps.Name
+		colors[id] = ps.Color
+		if h.room.ActivityDone[activity] != nil {
+			done[id] = h.room.ActivityDone[activity][id]
+		}
+	}
+	total := len(h.room.Players)
+	doneCount := len(h.room.ActivityDone[activity])
+	allDone := total > 0 && doneCount >= total
+	h.room.mu.Unlock()
+
+	h.broadcast(MsgWaitingStatus, WaitingStatusPayload{
+		Activity: activity, Done: done, Names: names, Colors: colors,
+		DoneCount: doneCount, Total: total, AllDone: allDone,
+	}, "")
 }
 
 func (h *Hub) advanceDay() {
@@ -325,39 +371,14 @@ func (h *Hub) advanceDay() {
 	h.room.Phase = "playing"
 	h.room.Ready = make(map[string]bool)
 	h.room.Votes = make(map[string]string)
+	h.room.ActivityDone = make(map[string]map[string]bool)
 	day := h.room.Day
 	h.room.mu.Unlock()
-
 	h.broadcast(MsgDayStart, map[string]int{"day": day}, "")
 	h.broadcastLobby()
 }
 
-func (h *Hub) checkGroupBonus(activity string) {
-	h.mu.RLock()
-	total := len(h.clients)
-	h.mu.RUnlock()
-	if total < 2 {
-		return
-	}
-
-	h.room.mu.Lock()
-	doneCount := 0
-	for _, ps := range h.room.Players {
-		if ps.Weight < 110 {
-			doneCount++
-		}
-	}
-	h.room.mu.Unlock()
-
-	if doneCount >= total && total >= 2 {
-		h.broadcast(MsgGroupBonus, GroupBonusPayload{
-			Reason:     "Все игроки завершили " + activity + "! Групповой бонус!",
-			WeightDrop: 0.5,
-		}, "")
-	}
-}
-
-// --- helpers ---
+// ── helpers ─────────────────────────────────────────────────────────────────
 
 func (h *Hub) sendTo(c *Client, t MsgType, payload interface{}) {
 	data, _ := json.Marshal(Envelope{Type: t, Payload: payload})
@@ -391,7 +412,7 @@ func (h *Hub) broadcastLobby() {
 		Players:    h.allPlayers(),
 		GameDay:    h.room.Day,
 		Phase:      h.room.Phase,
-		Votes:      copyVotes(h.room.Votes),
+		Votes:      copyMap(h.room.Votes),
 		ReadyCount: h.readyCount(),
 		Total:      h.totalCount(),
 	}, "")
@@ -437,7 +458,7 @@ func (h *Hub) tallyVotes() map[string]int {
 	return t
 }
 
-func copyVotes(v map[string]string) map[string]string {
+func copyMap(v map[string]string) map[string]string {
 	out := make(map[string]string, len(v))
 	for k, val := range v {
 		out[k] = val

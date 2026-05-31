@@ -42,6 +42,31 @@ class UIManager {
         ctx.fillText(text, x, y);
     }
 
+    // ── Exit button ─────────────────────────────────────────────────────────────
+    // Draws a consistent "← Выйти" button at top-right. Returns its hit rect.
+    drawExitBtn(label = '← Выйти', hovered = false) {
+        const ctx = this.ctx;
+        const W = this.W;
+        const bx = W - 130; const by = 8; const bw = 120; const bh = 30;
+        ctx.fillStyle = hovered ? '#5a1a1a' : 'rgba(60,10,10,0.85)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeStyle = hovered ? '#f44' : '#622';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.fillStyle = hovered ? '#f88' : '#f44';
+        ctx.font = 'bold 13px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, bx + bw / 2, by + 20);
+        ctx.textAlign = 'left';
+        return { x: bx, y: by, w: bw, h: bh };
+    }
+
+    // Returns true if (mx,my) is inside the exit button area
+    isExitBtnHit(mx, my) {
+        const bx = this.W - 130; const by = 8;
+        return mx >= bx && mx <= bx + 120 && my >= by && my <= by + 30;
+    }
+
     drawPanel(x, y, w, h, color = '#16162a', border = '#4a4aff') {
         const ctx = this.ctx;
         ctx.fillStyle = color;
@@ -223,7 +248,19 @@ class UIManager {
         ctx.fillStyle = '#ff0';
         ctx.font = 'bold 14px monospace';
         ctx.textAlign = 'right';
-        ctx.fillText(`★ ${gameData.score}`, W - 10, 32);
+        ctx.fillText(`★ ${gameData.score}`, W - 140, 32);
+        ctx.textAlign = 'left';
+
+        // Exit button inside HUD bar
+        ctx.fillStyle = 'rgba(80,10,10,0.9)';
+        ctx.fillRect(W - 126, 8, 116, 30);
+        ctx.strokeStyle = '#622';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(W - 126, 8, 116, 30);
+        ctx.fillStyle = '#f44';
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('✕ Выйти', W - 68, 28);
         ctx.textAlign = 'left';
     }
 
@@ -303,6 +340,7 @@ class UIManager {
         ctx.font = 'bold 14px monospace';
         ctx.fillText('[ПРОБЕЛ / КЛИК - ПРОДОЛЖИТЬ]', W / 2, 270);
         ctx.textAlign = 'left';
+        this.drawExitBtn('← Меню', hovered === 'exit');
     }
 
     renderDaySelect(gameData, hovered, day, completedToday) {
@@ -417,8 +455,9 @@ class UIManager {
         ctx.fillStyle = '#555';
         ctx.font = '12px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('Нажми на активность чтобы начать  |  Можно делать несколько активностей в день', W / 2, H - 20);
+        ctx.fillText('Нажми на активность чтобы начать', W / 2, H - 20);
         ctx.textAlign = 'left';
+        this.drawExitBtn('← Меню', hovered === 'exit');
     }
 
     renderEvening(gameData, sleepQuality) {
@@ -495,6 +534,7 @@ class UIManager {
         ctx.font = 'bold 16px monospace';
         ctx.fillText('[ПРОБЕЛ / КЛИК — СЛЕДУЮЩИЙ ДЕНЬ]', W / 2, 300);
         ctx.textAlign = 'left';
+        this.drawExitBtn('← Меню', false);
     }
 
     renderDeathScreen(gameData, glitchIntensity) {
@@ -880,6 +920,92 @@ class UIManager {
         ctx.font = 'bold 16px monospace';
         ctx.fillText('[ПРОБЕЛ / КЛИК — ПРОДОЛЖИТЬ]', W / 2, H / 2 + 120);
         ctx.textAlign = 'left';
+        this.drawExitBtn('← Меню', false);
+    }
+
+    // ── Waiting screen (cooperative multiplayer) ────────────────────────────────
+    renderWaitingScreen(activity, waitStatus, mpPlayers, myId) {
+        const ctx = this.ctx;
+        const W = this.W; const H = this.H;
+        const t = this.animTimer;
+
+        // Dark overlay bg
+        ctx.fillStyle = '#050518';
+        ctx.fillRect(0, 0, W, H);
+
+        // Pulsing spinner dots
+        for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2 + t * 2;
+            const r = 30;
+            const cx = W / 2 + Math.cos(angle) * r;
+            const cy = 100 + Math.sin(angle) * r;
+            const alpha = 0.3 + 0.7 * ((Math.sin(t * 4 + i * 0.8) + 1) / 2);
+            ctx.fillStyle = `rgba(100,200,255,${alpha})`;
+            ctx.fillRect(Math.round(cx) - 4, Math.round(cy) - 4, 8, 8);
+        }
+
+        const actLabels = {
+            parkour: '🏃 ПАРКУР', gym: '💪 ТРЕНАЖЁР',
+            breakfast: '🍳 ЗАВТРАК', dinner: '🍽 УЖИН',
+        };
+
+        this.drawPanel(W / 2 - 300, 150, 600, 280, 'rgba(0,0,30,0.95)', '#4af');
+
+        ctx.fillStyle = '#4af';
+        ctx.font = 'bold 22px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('⏳ ЖДЁМ ВСЕХ ИГРОКОВ', W / 2, 192);
+
+        ctx.fillStyle = '#ff0';
+        ctx.font = '16px monospace';
+        ctx.fillText(`${actLabels[activity] || activity}`, W / 2, 220);
+
+        // Player list with status
+        const players = waitStatus ? Object.keys(waitStatus.names || {}) : [];
+        const doneMap = (waitStatus && waitStatus.done) || {};
+        const names = (waitStatus && waitStatus.names) || {};
+        const colors = (waitStatus && waitStatus.colors) || {};
+
+        // Also show self
+        const allIds = new Set([...players]);
+        if (myId) allIds.add(myId);
+
+        let rowY = 246;
+        [...allIds].forEach(id => {
+            const isDone = doneMap[id] || (id === myId && waitStatus && doneMap[myId]);
+            const isMe = id === myId;
+            const name = isMe ? 'Ты' : (names[id] || 'Игрок');
+            const color = isMe ? '#fff' : (colors[id] || '#aaa');
+
+            ctx.fillStyle = isDone ? '#1a3a1a' : '#1a1a3a';
+            ctx.fillRect(W / 2 - 240, rowY - 14, 480, 26);
+
+            ctx.fillStyle = isDone ? '#4f4' : '#fa0';
+            ctx.font = 'bold 18px monospace';
+            ctx.fillText(isDone ? '✓' : '⏳', W / 2 - 220, rowY + 6);
+
+            ctx.fillStyle = color;
+            ctx.font = `${isMe ? 'bold ' : ''}15px monospace`;
+            ctx.fillText(name + (isMe ? ' (ты)' : ''), W / 2 - 190, rowY + 6);
+
+            if (isDone) {
+                ctx.fillStyle = '#4f4';
+                ctx.font = '13px monospace';
+                ctx.fillText('Выполнено!', W / 2 + 80, rowY + 6);
+            }
+            rowY += 30;
+        });
+
+        const doneCount = waitStatus ? (waitStatus.done_count || 0) : 1;
+        const total = waitStatus ? (waitStatus.total || 1) : 1;
+
+        ctx.fillStyle = '#aaa';
+        ctx.font = '14px monospace';
+        ctx.fillText(`Готово: ${doneCount} / ${total}`, W / 2, 436);
+        ctx.fillText('Задание засчитается когда все завершат!', W / 2, 456);
+
+        ctx.textAlign = 'left';
+        this.drawExitBtn('✕ Выйти', false);
     }
 
     renderLoadSaves(saves, hovered) {
@@ -954,5 +1080,6 @@ class UIManager {
         ctx.font = '13px monospace';
         ctx.fillText('[Enter - начать игру]', W / 2, H / 2 + 110);
         ctx.textAlign = 'left';
+        this.drawExitBtn('← Меню', false);
     }
 }

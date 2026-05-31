@@ -1,6 +1,5 @@
 package ws
 
-// MsgType identifies the kind of WebSocket message.
 type MsgType string
 
 const (
@@ -11,7 +10,10 @@ const (
 	MsgPlayerMove     MsgType = "player_move"
 	MsgActivityVote   MsgType = "activity_vote"
 	MsgVoteUpdate     MsgType = "vote_update"
-	MsgActivityResult MsgType = "activity_result"
+	MsgActivityStart  MsgType = "activity_start"   // someone started an activity
+	MsgActivityResult MsgType = "activity_result"  // someone finished
+	MsgWaitingStatus  MsgType = "waiting_status"   // who's done, who isn't
+	MsgActivityAllDone MsgType = "activity_all_done" // all players finished → proceed
 	MsgStatsUpdate    MsgType = "stats_update"
 	MsgChat           MsgType = "chat"
 	MsgNightStart     MsgType = "night_start"
@@ -27,7 +29,6 @@ type Envelope struct {
 	Payload interface{} `json:"payload"`
 }
 
-// PlayerInfo is the serialised state sent to all clients.
 type PlayerInfo struct {
 	ID     string  `json:"id"`
 	Name   string  `json:"name"`
@@ -71,6 +72,13 @@ type MovePayload struct {
 	Weight   float64 `json:"weight"`
 }
 
+type ActivityStartPayload struct {
+	PlayerID   string `json:"player_id"`
+	PlayerName string `json:"player_name"`
+	Activity   string `json:"activity"`
+	Color      string `json:"color"`
+}
+
 type ActivityResultPayload struct {
 	PlayerID   string  `json:"player_id"`
 	PlayerName string  `json:"player_name"`
@@ -79,6 +87,22 @@ type ActivityResultPayload struct {
 	WeightLost float64 `json:"weight_lost"`
 	NewWeight  float64 `json:"new_weight"`
 	Color      string  `json:"color"`
+}
+
+// WaitingStatusPayload tells all clients how many players have completed the current activity.
+type WaitingStatusPayload struct {
+	Activity  string            `json:"activity"`
+	Done      map[string]bool   `json:"done"`   // playerID -> finished
+	Names     map[string]string `json:"names"`  // playerID -> name
+	Colors    map[string]string `json:"colors"` // playerID -> color
+	DoneCount int               `json:"done_count"`
+	Total     int               `json:"total"`
+	AllDone   bool              `json:"all_done"`
+}
+
+type ActivityAllDonePayload struct {
+	Activity   string  `json:"activity"`
+	GroupBonus float64 `json:"group_bonus"` // extra kg lost for everyone
 }
 
 type GroupBonusPayload struct {
@@ -118,7 +142,6 @@ type ReadyStatusPayload struct {
 	AllReady   bool `json:"all_ready"`
 }
 
-// Incoming from client
 type IncomingMsg struct {
 	Type    string                 `json:"type"`
 	Payload map[string]interface{} `json:"payload"`
